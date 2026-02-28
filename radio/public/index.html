@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PTT Радиосвязь</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="card" id="joinCard">
+        <h1>PTT радиосвязь</h1>
+        <p class="subtitle">Симплексный канал: одновременно говорит только один участник.</p>
+
+        <form id="joinForm" autocomplete="off">
+          <label>
+            WebSocket URL
+            <input id="wsUrl" type="text" required />
+          </label>
+
+          <label>
+            Имя участника
+            <input id="name" type="text" maxlength="60" placeholder="Иван Петров" required />
+          </label>
+
+          <label>
+            Роль
+            <select id="role" required>
+              <option value="РУКОВОДИТЕЛЬ">Руководитель занятий</option>
+              <option value="ДИСПЕТЧЕР">Диспетчер (Д)</option>
+              <option value="РТП">Руководитель тушения пожара (РТП)</option>
+              <option value="НШ">Начальник штаба (НШ)</option>
+              <option value="КО">Командир отделения (КО)</option>
+              <option value="С">Ствольщик (С)</option>
+              <option value="В">Водитель (В)</option>
+            </select>
+          </label>
+
+          <button type="submit" id="joinBtn">Подключиться</button>
+        </form>
+      </section>
+
+      <section class="card hidden" id="radioCard">
+        <div class="top-row">
+          <div>
+            <h2>Учебная сессия</h2>
+            <p class="mono" id="selfInfo"></p>
+          </div>
+          <div class="status" id="connectionStatus">OFFLINE</div>
+        </div>
+
+        <div class="speaker-box" id="speakerIndicator">[ГОВОРИТ: НЕТ]</div>
+
+        <button id="pttBtn" class="ptt-btn" type="button">
+          Удерживайте для передачи (Пробел)
+        </button>
+
+        <p class="hint" id="pttHint">Нажмите и удерживайте кнопку, чтобы запросить канал.</p>
+
+        <h3>Участники</h3>
+        <ul id="participants" class="participants"></ul>
+
+        <h3>События</h3>
+        <ul id="events" class="events"></ul>
+      </section>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
