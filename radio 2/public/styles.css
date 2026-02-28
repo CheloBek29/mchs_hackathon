@@ -191,3 +191,36 @@ button:disabled {
     align-items: stretch;
   }
 }
+
+.channel-controls {
+  display: flex;
+  gap: 16px;
+  margin-top: 12px;
+  margin-bottom: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.channel-controls label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 0;
+  font-weight: 500;
+}
+
+.jam-btn {
+  background-color: #6c757d;
+  font-size: 0.9rem;
+  padding: 8px 16px;
+  border-radius: 4px;
+}
+
+.jam-btn:hover {
+  background-color: #5a6268;
+}
+
+.jam-btn.jamming {
+  background-color: var(--danger);
+  transform: translateY(1px);
+}

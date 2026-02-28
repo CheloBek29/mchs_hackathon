@@ -19,6 +19,17 @@
           </label>
 
           <label>
+            Начальная частота (Канал)
+            <select id="initialChannel" required>
+              <option value="1">Канал 1</option>
+              <option value="2">Канал 2</option>
+              <option value="3">Канал 3</option>
+              <option value="4">Канал 4</option>
+              <option value="5">Канал 5</option>
+            </select>
+          </label>
+
+          <label>
             Имя участника
             <input id="name" type="text" maxlength="60" placeholder="Иван Петров" required />
           </label>
@@ -50,6 +61,20 @@
         </div>
 
         <div class="speaker-box" id="speakerIndicator">[ГОВОРИТ: НЕТ]</div>
+
+        <div class="channel-controls">
+          <label>
+            Сменить канал:
+            <select id="activeChannel">
+              <option value="1">Канал 1</option>
+              <option value="2">Канал 2</option>
+              <option value="3">Канал 3</option>
+              <option value="4">Канал 4</option>
+              <option value="5">Канал 5</option>
+            </select>
+          </label>
+          <button id="jamBtn" class="jam-btn" type="button">Глушить канал (Jam)</button>
+        </div>
 
         <button id="pttBtn" class="ptt-btn" type="button">
           Удерживайте для передачи (Пробел)

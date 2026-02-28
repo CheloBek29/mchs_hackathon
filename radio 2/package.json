@@ -5,7 +5,8 @@
   "private": true,
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "start:https": "TLS_KEY_PATH=certs/server.key TLS_CERT_PATH=certs/server.cert node server.js"
   },
   "engines": {
     "node": ">=18"

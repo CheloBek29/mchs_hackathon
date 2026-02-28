@@ -104,10 +104,10 @@ if (TLS_ENABLED) {
 
 const wss = new WebSocketServer({ server, path: '/ws' });
 
-/** @type {Map<import('ws').WebSocket, { id: string, name: string, role: string, joined: boolean }>} */
+/** @type {Map<import('ws').WebSocket, { id: string, name: string, role: string, channel: string, joined: boolean }>} */
 const clients = new Map();
-let currentSpeakerId = null;
-let currentTalkId = 0;
+const currentSpeakers = new Map(); // channel -> { speakerId, talkId }
+const jammedChannels = new Set();
 
 function safeName(raw, fallback) {
   const cleaned = String(raw || '')
@@ -126,11 +126,13 @@ function safeRole(raw) {
 }
 
 function serializeParticipant(client) {
+  const info = currentSpeakers.get(client.channel);
   return {
     id: client.id,
     name: client.name,
     role: client.role,
-    speaking: client.id === currentSpeakerId
+    channel: client.channel,
+    speaking: info ? info.speakerId === client.id : false
   };
 }
 
@@ -178,13 +180,22 @@ function buildStatePayload() {
 
   participants.sort((a, b) => a.role.localeCompare(b.role, 'ru') || a.name.localeCompare(b.name, 'ru'));
 
-  const currentSpeaker = currentSpeakerId ? findClientById(currentSpeakerId) : null;
+  const speakersMap = {};
+  for (const [ch, info] of currentSpeakers) {
+    const speakerClient = findClientById(info.speakerId);
+    if (speakerClient) {
+      speakersMap[ch] = {
+        speaker: serializeParticipant(speakerClient),
+        talkId: info.talkId
+      };
+    }
+  }
 
   return {
     type: 'state',
     participants,
-    speaker: currentSpeaker ? serializeParticipant(currentSpeaker) : null,
-    talkId: currentSpeakerId ? currentTalkId : null
+    speakers: speakersMap,
+    jammedChannels: Array.from(jammedChannels)
   };
 }
 
@@ -192,16 +203,18 @@ function broadcastState() {
   broadcastJson(buildStatePayload());
 }
 
-function releaseChannel(reason, releasedByClientId = null) {
-  if (!currentSpeakerId) {
+function releaseChannel(channel, reason, releasedByClientId = null) {
+  const info = currentSpeakers.get(channel);
+  if (!info) {
     return;
   }
 
-  const previousSpeaker = findClientById(currentSpeakerId);
-  currentSpeakerId = null;
+  const previousSpeaker = findClientById(info.speakerId);
+  currentSpeakers.delete(channel);
 
   broadcastJson({
     type: 'speaker_update',
+    channel: channel,
     speaker: null,
     talkId: null,
     reason: reason || 'released',
@@ -213,30 +226,41 @@ function releaseChannel(reason, releasedByClientId = null) {
 }
 
 function grantChannel(ws, client) {
-  currentSpeakerId = client.id;
-  currentTalkId = (currentTalkId + 1) >>> 0;
-  if (currentTalkId === 0) {
-    currentTalkId = 1;
+  const channel = client.channel;
+  let talkId = 1;
+  const existing = currentSpeakers.get(channel);
+  if (existing) {
+    talkId = (existing.talkId + 1) >>> 0;
+    if (talkId === 0) {
+      talkId = 1;
+    }
   }
+
+  const info = { speakerId: client.id, talkId };
+  currentSpeakers.set(channel, info);
 
   sendJson(ws, {
     type: 'ptt_granted',
-    talkId: currentTalkId
+    channel,
+    talkId
   });
 
   broadcastJson({
     type: 'speaker_update',
+    channel,
     speaker: serializeParticipant(client),
-    talkId: currentTalkId
+    talkId
   });
 
   broadcastState();
 }
 
-function denyChannel(ws) {
-  const speaker = currentSpeakerId ? findClientById(currentSpeakerId) : null;
+function denyChannel(ws, channel) {
+  const info = currentSpeakers.get(channel);
+  const speaker = info ? findClientById(info.speakerId) : null;
   sendJson(ws, {
     type: 'ptt_denied',
+    channel,
     reason: 'channel_busy',
     speaker: speaker ? serializeParticipant(speaker) : null
   });
@@ -248,6 +272,7 @@ wss.on('connection', (ws) => {
     id,
     name: `Участник ${id.slice(0, 8)}`,
     role: 'БЕЗ РОЛИ',
+    channel: '1',
     joined: false
   };
 
@@ -270,7 +295,8 @@ wss.on('connection', (ws) => {
     }
 
     if (isBinary) {
-      if (!liveClient.joined || currentSpeakerId !== liveClient.id) {
+      const info = currentSpeakers.get(liveClient.channel);
+      if (!liveClient.joined || !info || info.speakerId !== liveClient.id) {
         return;
       }
 
@@ -281,7 +307,7 @@ wss.on('connection', (ws) => {
 
       const frameType = frame.readUInt8(0);
       const talkId = frame.readUInt32LE(1);
-      if (frameType !== 1 || talkId !== currentTalkId) {
+      if (frameType !== 1 || talkId !== info.talkId) {
         return;
       }
 
@@ -289,7 +315,9 @@ wss.on('connection', (ws) => {
         if (peerWs === ws || peerWs.readyState !== peerWs.OPEN || !peerClient.joined) {
           continue;
         }
-        peerWs.send(frame, { binary: true });
+        if (peerClient.channel === liveClient.channel) {
+          peerWs.send(frame, { binary: true });
+        }
       }
       return;
     }
@@ -310,6 +338,9 @@ wss.on('connection', (ws) => {
       case 'hello': {
         liveClient.name = safeName(message.name, liveClient.name);
         liveClient.role = safeRole(message.role);
+        if (message.channel) {
+          liveClient.channel = String(message.channel).trim() || '1';
+        }
         liveClient.joined = true;
 
         sendJson(ws, {
@@ -333,28 +364,59 @@ wss.on('connection', (ws) => {
           return;
         }
 
-        if (!currentSpeakerId) {
+        const info = currentSpeakers.get(liveClient.channel);
+        if (!info) {
           grantChannel(ws, liveClient);
           return;
         }
 
-        if (currentSpeakerId === liveClient.id) {
+        if (info.speakerId === liveClient.id) {
           sendJson(ws, {
             type: 'ptt_granted',
-            talkId: currentTalkId,
+            channel: liveClient.channel,
+            talkId: info.talkId,
             resumed: true
           });
           return;
         }
 
-        denyChannel(ws);
+        denyChannel(ws, liveClient.channel);
         break;
       }
 
       case 'ptt_release': {
-        if (currentSpeakerId === liveClient.id) {
-          releaseChannel('manual_release', liveClient.id);
+        const info = currentSpeakers.get(liveClient.channel);
+        if (info && info.speakerId === liveClient.id) {
+          releaseChannel(liveClient.channel, 'manual_release', liveClient.id);
         }
+        break;
+      }
+
+      case 'change_channel': {
+        if (!liveClient.joined) return;
+        const info = currentSpeakers.get(liveClient.channel);
+        if (info && info.speakerId === liveClient.id) {
+          releaseChannel(liveClient.channel, 'channel_changed', liveClient.id);
+        }
+
+        liveClient.channel = String(message.channel || '1').trim();
+        broadcastState();
+        break;
+      }
+
+      case 'jam_channel': {
+        if (!liveClient.joined) return;
+        const targetChannel = String(message.channel || liveClient.channel).trim();
+        jammedChannels.add(targetChannel);
+        broadcastState();
+        break;
+      }
+
+      case 'unjam_channel': {
+        if (!liveClient.joined) return;
+        const targetChannel = String(message.channel || liveClient.channel).trim();
+        jammedChannels.delete(targetChannel);
+        broadcastState();
         break;
       }
 
@@ -441,8 +503,9 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    if (currentSpeakerId === closedClient.id) {
-      releaseChannel('disconnect', closedClient.id);
+    const info = currentSpeakers.get(closedClient.channel);
+    if (info && info.speakerId === closedClient.id) {
+      releaseChannel(closedClient.channel, 'disconnect', closedClient.id);
     }
 
     clients.delete(ws);

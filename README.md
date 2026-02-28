@@ -1,1 +1,0 @@
-# mchs_hackathon

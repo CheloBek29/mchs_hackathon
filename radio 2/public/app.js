@@ -6,11 +6,14 @@ const dom = {
   joinForm: document.getElementById('joinForm'),
   joinBtn: document.getElementById('joinBtn'),
   wsUrl: document.getElementById('wsUrl'),
+  initialChannel: document.getElementById('initialChannel'),
   name: document.getElementById('name'),
   role: document.getElementById('role'),
   selfInfo: document.getElementById('selfInfo'),
   connectionStatus: document.getElementById('connectionStatus'),
   speakerIndicator: document.getElementById('speakerIndicator'),
+  activeChannel: document.getElementById('activeChannel'),
+  jamBtn: document.getElementById('jamBtn'),
   pttBtn: document.getElementById('pttBtn'),
   pttHint: document.getElementById('pttHint'),
   participants: document.getElementById('participants'),
@@ -22,14 +25,14 @@ const rtcConfig = {
   iceCandidatePoolSize: 4
 };
 
-const RADIO_NOISE_URL = '/assets/radio-noise.mp3';
-
 const peers = new Map();
 
 const state = {
   ws: null,
   connected: false,
   joined: false,
+  channel: '1',
+  jammedChannels: new Set(),
   self: null,
   participants: [],
   speaker: null,
@@ -40,14 +43,7 @@ const state = {
   deniedSpeaker: null,
   localStream: null,
   localTrack: null,
-  audioOutContext: null,
-  noiseElement: null,
-  noiseSourceNode: null,
-  noiseHpNode: null,
-  noiseLpNode: null,
-  noiseGainNode: null,
-  noiseActive: false,
-  noiseStopTimer: null
+  audioOutContext: null
 };
 
 const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -84,7 +80,7 @@ function setConnectionBadge(mode) {
 
 function currentSpeakerText() {
   if (!state.speaker) {
-    return '[ГОВОРИТ: НЕТ]';
+    return `[ГОВОРИТ: НЕТ]`;
   }
 
   return `[ГОВОРИТ: ${state.speaker.role}] ${state.speaker.name}`;
@@ -98,14 +94,16 @@ function renderSpeaker() {
 function renderParticipants() {
   dom.participants.innerHTML = '';
 
-  if (!state.participants.length) {
+  const channelParticipants = state.participants.filter(p => p.channel === state.channel);
+
+  if (!channelParticipants.length) {
     const empty = document.createElement('li');
-    empty.textContent = 'Нет подключенных участников.';
+    empty.textContent = 'Нет подключенных участников в этом канале.';
     dom.participants.appendChild(empty);
     return;
   }
 
-  for (const item of state.participants) {
+  for (const item of channelParticipants) {
     const li = document.createElement('li');
     li.classList.toggle('live', Boolean(item.speaking));
 
@@ -117,6 +115,11 @@ function renderParticipants() {
 }
 
 function renderPttUi() {
+  dom.activeChannel.value = state.channel;
+  const isJammed = state.jammedChannels.has(state.channel);
+  dom.jamBtn.classList.toggle('jamming', isJammed);
+  dom.jamBtn.textContent = isJammed ? 'Восстановить частоту' : 'Глушить канал (Jam)';
+
   const disabled = !state.connected || !state.joined;
   dom.pttBtn.disabled = disabled;
   dom.pttBtn.classList.toggle('pressed', state.pttPressed);
@@ -129,6 +132,10 @@ function renderPttUi() {
     return;
   }
 
+  if (isJammed) {
+    dom.pttHint.textContent = 'Канал зашумлен! Вас никто не услышит.';
+  }
+
   if (!state.localTrack) {
     dom.pttBtn.textContent = 'МИКРОФОН НЕ ДОСТУПЕН';
     dom.pttHint.textContent = 'Разрешите доступ к микрофону, чтобы передавать голос.';
@@ -137,7 +144,7 @@ function renderPttUi() {
 
   if (state.isTransmitting) {
     dom.pttBtn.textContent = 'ИДЕТ ПЕРЕДАЧА - ОТПУСТИТЕ ДЛЯ ЗАВЕРШЕНИЯ';
-    dom.pttHint.textContent = 'Канал занят вами. Голос передается в реальном времени.';
+    if (!isJammed) dom.pttHint.textContent = 'Канал занят вами. Голос передается в реальном времени.';
     return;
   }
 
@@ -149,7 +156,7 @@ function renderPttUi() {
 
   if (state.deniedSpeaker) {
     dom.pttHint.textContent = `Канал занят: ${state.deniedSpeaker.role} ${state.deniedSpeaker.name}`;
-  } else {
+  } else if (!isJammed) {
     dom.pttHint.textContent = 'Нажмите и удерживайте кнопку, чтобы запросить канал.';
   }
 
@@ -180,6 +187,12 @@ async function ensurePlaybackContext() {
   if (!state.audioOutContext) {
     const Context = window.AudioContext || window.webkitAudioContext;
     state.audioOutContext = new Context({ latencyHint: 'interactive' });
+
+    try {
+      await state.audioOutContext.audioWorklet.addModule('/dsp-worklet.js');
+    } catch (err) {
+      console.error('Failed to load dsp-worklet', err);
+    }
   }
 
   if (state.audioOutContext.state === 'suspended') {
@@ -187,91 +200,109 @@ async function ensurePlaybackContext() {
   }
 }
 
-function ensureNoiseGraph() {
-  if (!state.audioOutContext) {
-    return;
+function makeDistortionCurve(amount = 50) {
+  const k = typeof amount === 'number' ? amount : 50;
+  const n_samples = 44100;
+  const curve = new Float32Array(n_samples);
+  for (let i = 0; i < n_samples; ++i) {
+    const x = (i * 2) / n_samples - 1;
+    curve[i] = Math.tanh(x * (k / 10)); // simple soft clipping
   }
-
-  if (state.noiseSourceNode && state.noiseHpNode && state.noiseLpNode && state.noiseGainNode && state.noiseElement) {
-    return;
-  }
-
-  const context = state.audioOutContext;
-  const noiseElement = new Audio(RADIO_NOISE_URL);
-  const noiseSourceNode = context.createMediaElementSource(noiseElement);
-  const hpNode = context.createBiquadFilter();
-  const lpNode = context.createBiquadFilter();
-  const gainNode = context.createGain();
-
-  noiseElement.preload = 'auto';
-  noiseElement.loop = true;
-  noiseElement.crossOrigin = 'anonymous';
-  noiseElement.volume = 1;
-
-  gainNode.gain.value = 0;
-  hpNode.type = 'highpass';
-  hpNode.frequency.value = 1600;
-  hpNode.Q.value = 0.7;
-  lpNode.type = 'lowpass';
-  lpNode.frequency.value = 7200;
-  lpNode.Q.value = 0.7;
-
-  noiseSourceNode.connect(hpNode);
-  hpNode.connect(lpNode);
-  lpNode.connect(gainNode);
-  gainNode.connect(context.destination);
-
-  state.noiseElement = noiseElement;
-  state.noiseSourceNode = noiseSourceNode;
-  state.noiseHpNode = hpNode;
-  state.noiseLpNode = lpNode;
-  state.noiseGainNode = gainNode;
+  return curve;
 }
 
-async function setNoiseActive(active) {
-  state.noiseActive = Boolean(active);
+function setupPeerDSP(peer, stream) {
+  const actx = state.audioOutContext;
+  if (!actx || peer.dspSetup) return;
 
-  try {
-    await ensurePlaybackContext();
-  } catch {
-    return;
-  }
+  const source = actx.createMediaStreamSource(stream);
 
-  ensureNoiseGraph();
-  if (!state.noiseGainNode || !state.audioOutContext || !state.noiseElement) {
-    return;
-  }
+  // Highpass 300Hz
+  const hp = actx.createBiquadFilter();
+  hp.type = 'highpass';
+  hp.frequency.value = 300;
+  hp.Q.value = 0.7;
 
-  if (state.noiseStopTimer) {
-    clearTimeout(state.noiseStopTimer);
-    state.noiseStopTimer = null;
-  }
+  // Lowpass 3000Hz (creates the Bandpass together with HP)
+  const lp = actx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = 3000;
+  lp.Q.value = 0.7;
 
-  const now = state.audioOutContext.currentTime;
-  state.noiseGainNode.gain.cancelScheduledValues(now);
+  // Pre-gain for overdrive
+  const driveGain = actx.createGain();
+  driveGain.gain.value = 5.0;
 
-  if (state.noiseActive) {
-    if (state.noiseElement.paused) {
-      state.noiseElement.play().catch(() => {
-        // Browser can block autoplay until explicit user gesture.
-      });
-    }
-    state.noiseGainNode.gain.setTargetAtTime(0.06, now, 0.02);
-    return;
-  }
+  // Soft-clipping Distortion
+  const waveShaper = actx.createWaveShaper();
+  waveShaper.curve = makeDistortionCurve();
 
-  state.noiseGainNode.gain.setTargetAtTime(0, now, 0.03);
-  state.noiseStopTimer = window.setTimeout(() => {
-    if (!state.noiseActive && state.noiseElement && !state.noiseElement.paused) {
-      state.noiseElement.pause();
-    }
-    state.noiseStopTimer = null;
-  }, 220);
+  // Custom Walkie-Talkie DSP Worklet (Noise, envelope, fading)
+  const dspNode = new AudioWorkletNode(actx, 'radio-dsp-worklet');
+
+  // Output gain node to route/mute audio for simplex logic
+  const outGain = actx.createGain();
+  outGain.gain.value = 0; // muted by default until speaking
+
+  // Connect pipeline
+  source.connect(hp);
+  hp.connect(lp);
+  lp.connect(driveGain);
+  driveGain.connect(waveShaper);
+  waveShaper.connect(dspNode);
+  dspNode.connect(outGain);
+  outGain.connect(actx.destination);
+
+  peer.dspSetup = true;
+  peer.outGain = outGain;
+  peer.dspNode = dspNode;
+  peer.wasSpeaking = false;
+
+  // Need to force an immediate DSP state update because the peer might already
+  // be the active speaker before their WebRTC track actually arrived.
+  updateDSPState();
 }
 
-function updateNoiseState() {
-  const shouldNoise = Boolean(state.speaker && state.self && state.speaker.id !== state.self.id);
-  setNoiseActive(shouldNoise);
+function updateDSPState() {
+  const speakerId = state.speaker ? state.speaker.id : null;
+  const selfId = state.self ? state.self.id : null;
+  const now = state.audioOutContext ? state.audioOutContext.currentTime : 0;
+  const isJammed = state.jammedChannels.has(state.channel);
+
+  for (const [peerId, peer] of peers) {
+    if (!peer.outGain || !state.audioOutContext) continue;
+
+    if (peer.dspNode) {
+      const param = peer.dspNode.parameters.get('jammed');
+      if (param) param.setValueAtTime(isJammed ? 1.0 : 0.0, now);
+    }
+
+    const isSpeaking = (speakerId === peerId);
+    const isSelf = (peerId === selfId);
+
+    if (isSpeaking && !isSelf) {
+      // Someone else is speaking: unmute them quickly
+      peer.outGain.gain.cancelScheduledValues(now);
+      peer.outGain.gain.setTargetAtTime(1.0, now, 0.05);
+      peer.wasSpeaking = true;
+    } else {
+      // Not speaking or it's us: mute them
+      if (peer.wasSpeaking && !isSpeaking) {
+        // Just stopped speaking -> Trigger the tssshk squelch tail!
+        if (peer.dspNode) {
+          peer.dspNode.port.postMessage({ type: 'trigger_tail' });
+        }
+        // Allow the tail to play out by muting slightly slower (tail is ~150ms)
+        peer.outGain.gain.cancelScheduledValues(now);
+        peer.outGain.gain.setTargetAtTime(0, now + 0.16, 0.05);
+        peer.wasSpeaking = false;
+      } else if (!peer.wasSpeaking) {
+        // Was already quiet
+        peer.outGain.gain.cancelScheduledValues(now);
+        peer.outGain.gain.setValueAtTime(0, now);
+      }
+    }
+  }
 }
 
 function tuneSender(sender) {
@@ -414,7 +445,7 @@ function ensurePeerConnection(peerId) {
     });
   };
 
-  pc.ontrack = (event) => {
+  pc.ontrack = async (event) => {
     const [stream] = event.streams;
     if (!stream) {
       return;
@@ -422,9 +453,15 @@ function ensurePeerConnection(peerId) {
 
     if (audio.srcObject !== stream) {
       audio.srcObject = stream;
-      audio.play().catch(() => {
-        // Playback will start after next user interaction.
-      });
+      audio.muted = true; // Use Web Audio API for output
+      audio.play().catch(() => { });
+
+      try {
+        await ensurePlaybackContext();
+        setupPeerDSP(peer, stream);
+      } catch (err) {
+        console.error('Failed to setup DSP', err);
+      }
     }
   };
 
@@ -454,12 +491,20 @@ function syncPeers() {
     if (participant.id === state.self.id) {
       continue;
     }
-    required.add(participant.id);
-    ensurePeerConnection(participant.id);
+    if (participant.channel === state.channel) {
+      required.add(participant.id);
+      ensurePeerConnection(participant.id);
+    }
   }
 
   for (const peerId of [...peers.keys()]) {
     if (!required.has(peerId)) {
+      const peer = peers.get(peerId);
+      if (peer && peer.outGain && state.audioOutContext) {
+        // Instantly mute before tearing down the connection to prevent residual noise
+        peer.outGain.gain.cancelScheduledValues(state.audioOutContext.currentTime);
+        peer.outGain.gain.setValueAtTime(0, state.audioOutContext.currentTime);
+      }
       closePeer(peerId);
     }
   }
@@ -574,19 +619,11 @@ function handleDisconnect(reason) {
   state.awaitingGrant = false;
   state.isTransmitting = false;
   state.participants = [];
+  state.jammedChannels.clear();
   state.deniedSpeaker = null;
   state.ws = null;
 
   closeAllPeers();
-  setNoiseActive(false);
-
-  if (state.noiseStopTimer) {
-    clearTimeout(state.noiseStopTimer);
-    state.noiseStopTimer = null;
-  }
-  if (state.noiseElement) {
-    state.noiseElement.pause();
-  }
 
   setConnectionBadge('offline');
   dom.joinCard.classList.remove('hidden');
@@ -618,8 +655,10 @@ function handleControlMessage(message) {
 
     case 'state': {
       state.participants = Array.isArray(message.participants) ? message.participants : [];
-      state.speaker = message.speaker || null;
-      state.talkId = message.talkId || null;
+      const speakerInfo = message.speakers ? message.speakers[state.channel] : null;
+      state.speaker = speakerInfo ? speakerInfo.speaker : null;
+      state.talkId = speakerInfo ? speakerInfo.talkId : null;
+      state.jammedChannels = new Set(message.jammedChannels || []);
 
       if (!state.speaker || !state.self || state.speaker.id !== state.self.id) {
         state.pttPressed = false;
@@ -629,23 +668,25 @@ function handleControlMessage(message) {
       }
 
       syncPeers();
-      updateNoiseState();
+      updateDSPState();
       renderAll();
       break;
     }
 
     case 'speaker_update': {
-      state.speaker = message.speaker || null;
-      state.talkId = message.talkId || null;
+      if (message.channel === state.channel) {
+        state.speaker = message.speaker || null;
+        state.talkId = message.talkId || null;
 
-      if (!state.speaker || !state.self || state.speaker.id !== state.self.id) {
-        state.pttPressed = false;
-        state.isTransmitting = false;
-        state.awaitingGrant = false;
-        setLocalTrackEnabled(false);
+        if (!state.speaker || !state.self || state.speaker.id !== state.self.id) {
+          state.pttPressed = false;
+          state.isTransmitting = false;
+          state.awaitingGrant = false;
+          setLocalTrackEnabled(false);
+        }
       }
 
-      updateNoiseState();
+      updateDSPState();
       renderAll();
       break;
     }
@@ -705,7 +746,7 @@ function handleControlMessage(message) {
   }
 }
 
-function openSocket({ wsUrl, name, role }) {
+function openSocket({ wsUrl, name, role, channel }) {
   if (state.ws) {
     try {
       state.ws.close();
@@ -737,7 +778,8 @@ function openSocket({ wsUrl, name, role }) {
     sendJson({
       type: 'hello',
       name,
-      role
+      role,
+      channel
     });
 
     addEvent('WebSocket соединение установлено.');
@@ -817,8 +859,9 @@ dom.joinForm.addEventListener('submit', async (event) => {
   const wsUrl = dom.wsUrl.value.trim();
   const name = dom.name.value.trim();
   const role = dom.role.value;
+  const channel = dom.initialChannel.value;
 
-  if (!wsUrl || !name || !role) {
+  if (!wsUrl || !name || !role || !channel) {
     addEvent('Заполните все поля подключения.');
     return;
   }
@@ -835,7 +878,32 @@ dom.joinForm.addEventListener('submit', async (event) => {
     addEvent(`Микрофон пока недоступен: ${error.message}`);
   }
 
-  openSocket({ wsUrl, name, role });
+  state.channel = channel;
+  openSocket({ wsUrl, name, role, channel });
+});
+
+dom.activeChannel.addEventListener('change', (event) => {
+  const newChannel = event.target.value;
+  if (state.channel === newChannel) return;
+
+  state.channel = newChannel;
+  sendJson({ type: 'change_channel', channel: newChannel });
+
+  syncPeers();
+  updateDSPState();
+  renderAll();
+  addEvent(`Переход на частоту ${newChannel}.`);
+});
+
+dom.jamBtn.addEventListener('click', () => {
+  const isJammed = state.jammedChannels.has(state.channel);
+  if (isJammed) {
+    sendJson({ type: 'unjam_channel', channel: state.channel });
+    addEvent(`Отключено глушение на частоте ${state.channel}.`);
+  } else {
+    sendJson({ type: 'jam_channel', channel: state.channel });
+    addEvent(`Включено глушение на частоте ${state.channel}!`);
+  }
 });
 
 dom.pttBtn.addEventListener('pointerdown', (event) => {
