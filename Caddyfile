@@ -1,0 +1,13 @@
+sim.local {
+	tls internal
+	encode gzip
+
+	@api path /api* /docs* /openapi.json /health
+	reverse_proxy @api 127.0.0.1:8000
+
+	handle_path /radio/* {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	reverse_proxy 127.0.0.1:5173
+}

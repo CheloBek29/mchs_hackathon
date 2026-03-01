@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.so
+
+.env
+.venv/
+.venv-local/
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+test_stage7.db
+*.sqlite
+*.sqlite3
+
+.DS_Store
