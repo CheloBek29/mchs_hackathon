@@ -1,0 +1,10 @@
+
+> mchs-simulator@0.0.0 dev
+> vite --host 0.0.0.0 --port 5173
+
+
+  VITE v7.3.1  ready in 81 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://10.234.132.3:5173/
+  ➜  Network: http://198.18.0.1:5173/
