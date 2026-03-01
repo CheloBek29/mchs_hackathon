@@ -1,1 +1,13 @@
-backend/
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+
+backend/.env
+backend/.venv/
+backend/.venv-local/
+backend/.pytest_cache/
+backend/__pycache__/
+backend/*.sqlite
+backend/*.sqlite3
+
+.DS_Store

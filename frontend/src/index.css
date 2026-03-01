@@ -1,0 +1,42 @@
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-black text-white font-pixel;
+    /* Disable anti-aliasing for the pixel art look */
+    -webkit-font-smoothing: none;
+    font-size: 10px; /* Base size for the pixel font */
+  }
+
+  /* Ensure all images and canvas render without smoothing */
+  img, canvas {
+    image-rendering: -moz-crisp-edges;
+    image-rendering: -webkit-optimize-contrast;
+    image-rendering: crisp-edges;
+    image-rendering: pixelated;
+  }
+}
+
+@layer utilities {
+  .pixel-borders {
+    /* 
+      A simple approach to pixel borders using box-shadows.
+      This creates a 2px inner and outer stroke effect mimicking 8-bit styles.
+    */
+    box-shadow: 
+      inset 2px 2px 0px 0px rgba(255,255,255,0.2), 
+      inset -2px -2px 0px 0px rgba(0,0,0,0.5),
+      0 0 0 2px #000;
+  }
+  
+  .pixel-borders-active {
+    box-shadow: 
+      inset 2px 2px 0px 0px rgba(0,0,0,0.5), 
+      inset -2px -2px 0px 0px rgba(255,255,255,0.2),
+      0 0 0 2px #000;
+  }
+}
